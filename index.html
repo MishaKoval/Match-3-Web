@@ -1,50 +1,210 @@
 <!DOCTYPE html>
 <html lang="en-us">
-  <head>
+<head>
     <meta charset="utf-8">
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
     <meta http-equiv="Cache-Control" content="max-age=31536000, immutable">
-    <title>Unity Web Player | Match3TelegrammApp</title>
-  </head>
-  <body style="padding: 0; border: 0; margin: 0;">
-    <canvas id="unity-canvas" width=1920 height=1080 tabindex="-1" style="position: absolute; width: 100%; height: 100%; background: #231F20"></canvas>
-    <script src="Build/WebBuild.loader.js"></script>
-    <script>
-      var canvas = document.querySelector("#unity-canvas");
-      if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
-        // Mobile device style: fill the whole browser client area with the game canvas:
-        var meta = document.createElement('meta');
-        meta.name = 'viewport';
-        meta.content = 'width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, shrink-to-fit=yes';
-        document.getElementsByTagName('head')[0].appendChild(meta);
-
+    
+    <!-- Добавляем манифест для PWA -->
+    <link rel="manifest" href="manifest.json">
+    
+    <!-- Для iOS -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    
+    <title>Match3 Game</title>
+    
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            -webkit-tap-highlight-color: transparent;
+            touch-action: manipulation;
+        }
         
-        canvas.style.width = "100%";
-        canvas.style.height = "100%";
-        canvas.style.position = "fixed";
-
-        document.body.style.textAlign = "left";
-
-      }
-      
-      canvas.style.width = "100%";
-      canvas.style.height = "100%";
-
-      createUnityInstance(document.querySelector("#unity-canvas"), {
-        arguments: [],
-        dataUrl: "Build/WebBuild.data.unityweb",
-        frameworkUrl: "Build/WebBuild.framework.js.unityweb",
-        codeUrl: "Build/WebBuild.wasm.unityweb",
-        streamingAssetsUrl: "StreamingAssets",
-        companyName: "MiKo",
-        productName: "Match3TelegrammApp",
-        productVersion: "1.0",
-        // matchWebGLToCanvasSize: false, // Uncomment this to separately control WebGL canvas render size and DOM element size.
-        // devicePixelRatio: 1, // Uncomment this to override low DPI rendering on high DPI displays.
-      }).then((unityInstance) => {
-      }).catch((message) => {
-        alert(message);
-      });
+        body {
+            overflow: hidden;
+            background: #231F20;
+        }
+        
+        #loading-screen {
+            position: fixed;
+            width: 100%;
+            height: 100%;
+            background: #231F20;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            color: white;
+            font-family: Arial, sans-serif;
+        }
+        
+        #cache-status {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(0,0,0,0.5);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading-screen">
+        <div id="loading-text">Loading game...</div>
+        <div id="progress-bar" style="width: 0%; height: 4px; background: #4CAF50; margin-top: 20px;"></div>
+    </div>
+    
+    <div id="cache-status">Checking cache...</div>
+    <canvas id="unity-canvas" tabindex="-1"></canvas>
+    
+    <script>
+        // Настройки кеширования
+        const CACHE_CONFIG = {
+            name: 'match3-cache',
+            version: '1.0.0',
+            files: [
+                'Build/WebBuild.loader.js',
+                'Build/WebBuild.data.unityweb',
+                'Build/WebBuild.framework.js.unityweb',
+                'Build/WebBuild.wasm.unityweb'
+            ]
+        };
+        
+        // Проверяем кеш при загрузке
+        async function checkCache() {
+            const statusEl = document.getElementById('cache-status');
+            
+            if ('caches' in window) {
+                try {
+                    const cache = await caches.open(CACHE_CONFIG.name);
+                    const cachedRequests = await cache.keys();
+                    
+                    let cachedCount = 0;
+                    for (const file of CACHE_CONFIG.files) {
+                        const cached = await cache.match(file);
+                        if (cached) cachedCount++;
+                    }
+                    
+                    const cachePercentage = (cachedCount / CACHE_CONFIG.files.length) * 100;
+                    statusEl.textContent = `Cache: ${Math.round(cachePercentage)}%`;
+                    
+                    return cachePercentage > 80; // Если закэшировано больше 80%
+                } catch (e) {
+                    console.error('Cache error:', e);
+                    statusEl.textContent = 'Cache: Error';
+                    return false;
+                }
+            }
+            return false;
+        }
+        
+        // Основная функция загрузки
+        async function loadUnityGame() {
+            const isCached = await checkCache();
+            const loadingEl = document.getElementById('loading-screen');
+            const progressEl = document.getElementById('progress-bar');
+            
+            if (isCached) {
+                progressEl.style.width = '30%';
+                loadingEl.querySelector('#loading-text').textContent = 'Loading from cache...';
+            }
+            
+            // Настройки canvas для мобильных
+            const canvas = document.querySelector("#unity-canvas");
+            const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+            
+            if (isMobile) {
+                const meta = document.createElement('meta');
+                meta.name = 'viewport';
+                meta.content = 'width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, maximum-scale=1.0, shrink-to-fit=no';
+                document.head.appendChild(meta);
+                
+                canvas.style.width = window.innerWidth + 'px';
+                canvas.style.height = window.innerHeight + 'px';
+                canvas.style.position = 'fixed';
+                canvas.style.left = '0';
+                canvas.style.top = '0';
+                
+                // Предотвращаем масштабирование
+                document.addEventListener('touchmove', function(e) {
+                    if (e.scale !== 1) {
+                        e.preventDefault();
+                    }
+                }, { passive: false });
+                
+                // Предотвращаем контекстное меню
+                document.addEventListener('contextmenu', function(e) {
+                    e.preventDefault();
+                });
+            }
+            
+            // Загружаем Unity
+            progressEl.style.width = '50%';
+            loadingEl.querySelector('#loading-text').textContent = 'Loading Unity...';
+            
+            // Динамически загружаем loader
+            const script = document.createElement('script');
+            script.src = 'Build/WebBuild.loader.js';
+            script.onload = function() {
+                progressEl.style.width = '70%';
+                loadingEl.querySelector('#loading-text').textContent = 'Initializing game...';
+                
+                createUnityInstance(canvas, {
+                    arguments: [],
+                    dataUrl: "Build/WebBuild.data.unityweb",
+                    frameworkUrl: "Build/WebBuild.framework.js.unityweb",
+                    codeUrl: "Build/WebBuild.wasm.unityweb",
+                    streamingAssetsUrl: "StreamingAssets",
+                    companyName: "MiKo",
+                    productName: "Match3TelegrammApp",
+                    productVersion: "1.0",
+                    showBanner: false // Скрываем баннер Unity
+                }).then((unityInstance) => {
+                    progressEl.style.width = '100%';
+                    setTimeout(() => {
+                        loadingEl.style.opacity = '0';
+                        setTimeout(() => {
+                            loadingEl.style.display = 'none';
+                        }, 300);
+                    }, 500);
+                    
+                    // Сохраняем инстанс для Telegram
+                    if (window.Telegram && Telegram.WebApp) {
+                        Telegram.WebApp.ready();
+                        window.unityInstance = unityInstance;
+                    }
+                }).catch((message) => {
+                    loadingEl.querySelector('#loading-text').textContent = 'Error: ' + message;
+                    console.error(message);
+                });
+            };
+            
+            script.onerror = function() {
+                loadingEl.querySelector('#loading-text').textContent = 'Failed to load game files';
+            };
+            
+            document.head.appendChild(script);
+        }
+        
+        // Запускаем загрузку
+        window.addEventListener('DOMContentLoaded', loadUnityGame);
+        
+        // Для Telegram WebApp
+        if (window.Telegram && Telegram.WebApp) {
+            Telegram.WebApp.expand(); // Разворачиваем на весь экран
+            
+            // Сохраняем прогресс при закрытии
+            window.addEventListener('beforeunload', function() {
+                if (window.unityInstance) {
+                    // Можно сохранить состояние игры через Telegram WebApp CloudStorage
+                    Telegram.WebApp.CloudStorage.setItem('last_session', Date.now().toString());
+                }
+            });
+        }
     </script>
-  </body>
+</body>
 </html>
