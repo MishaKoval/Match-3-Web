@@ -5,12 +5,8 @@
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
     <meta http-equiv="Cache-Control" content="max-age=31536000, immutable">
     
-    <!-- Добавляем манифест для PWA -->
-    <link rel="manifest" href="manifest.json">
-    
-    <!-- Для iOS -->
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <!-- Критически важные настройки для мобильных -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     
     <title>Match3 Game</title>
     
@@ -19,10 +15,12 @@
             margin: 0;
             padding: 0;
             -webkit-tap-highlight-color: transparent;
-            touch-action: manipulation;
+            touch-action: none; /* Важно для игр */
         }
         
-        body {
+        html, body {
+            width: 100%;
+            height: 100%;
             overflow: hidden;
             background: #231F20;
         }
@@ -33,6 +31,7 @@
             height: 100%;
             background: #231F20;
             display: flex;
+            flex-direction: column;
             justify-content: center;
             align-items: center;
             z-index: 1000;
@@ -40,171 +39,406 @@
             font-family: Arial, sans-serif;
         }
         
-        #cache-status {
+        .progress-container {
+            width: 80%;
+            max-width: 300px;
+            height: 20px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 10px;
+            margin-top: 20px;
+            overflow: hidden;
+        }
+        
+        .progress-bar {
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg, #4CAF50, #8BC34A);
+            transition: width 0.3s;
+        }
+        
+        #cache-indicator {
             position: absolute;
             top: 10px;
             right: 10px;
-            background: rgba(0,0,0,0.5);
-            color: white;
-            padding: 5px 10px;
-            border-radius: 5px;
-            font-size: 12px;
+            background: rgba(0,0,0,0.7);
+            color: #4CAF50;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            display: none;
         }
     </style>
 </head>
 <body>
     <div id="loading-screen">
-        <div id="loading-text">Loading game...</div>
-        <div id="progress-bar" style="width: 0%; height: 4px; background: #4CAF50; margin-top: 20px;"></div>
+        <div id="loading-text">Инициализация...</div>
+        <div class="progress-container">
+            <div class="progress-bar" id="progress-bar"></div>
+        </div>
+        <div id="loading-details" style="margin-top: 10px; font-size: 12px; color: #888;"></div>
     </div>
     
-    <div id="cache-status">Checking cache...</div>
+    <div id="cache-indicator">КЕШ</div>
     <canvas id="unity-canvas" tabindex="-1"></canvas>
     
     <script>
-        // Настройки кеширования
-        const CACHE_CONFIG = {
-            name: 'match3-cache',
-            version: '1.0.0',
-            files: [
-                'Build/WebBuild.loader.js',
-                'Build/WebBuild.data.unityweb',
-                'Build/WebBuild.framework.js.unityweb',
-                'Build/WebBuild.wasm.unityweb'
-            ]
-        };
+        // ==================== КЕШИРОВАНИЕ С ИСПОЛЬЗОВАНИЕМ INDEXEDDB ====================
+        // IndexedDB работает в Telegram и iOS Safari лучше, чем Service Workers
         
-        // Проверяем кеш при загрузке
-        async function checkCache() {
-            const statusEl = document.getElementById('cache-status');
-            
-            if ('caches' in window) {
-                try {
-                    const cache = await caches.open(CACHE_CONFIG.name);
-                    const cachedRequests = await cache.keys();
-                    
-                    let cachedCount = 0;
-                    for (const file of CACHE_CONFIG.files) {
-                        const cached = await cache.match(file);
-                        if (cached) cachedCount++;
-                    }
-                    
-                    const cachePercentage = (cachedCount / CACHE_CONFIG.files.length) * 100;
-                    statusEl.textContent = `Cache: ${Math.round(cachePercentage)}%`;
-                    
-                    return cachePercentage > 80; // Если закэшировано больше 80%
-                } catch (e) {
-                    console.error('Cache error:', e);
-                    statusEl.textContent = 'Cache: Error';
-                    return false;
-                }
-            }
-            return false;
-        }
-        
-        // Основная функция загрузки
-        async function loadUnityGame() {
-            const isCached = await checkCache();
-            const loadingEl = document.getElementById('loading-screen');
-            const progressEl = document.getElementById('progress-bar');
-            
-            if (isCached) {
-                progressEl.style.width = '30%';
-                loadingEl.querySelector('#loading-text').textContent = 'Loading from cache...';
+        class UnityCache {
+            constructor() {
+                this.dbName = 'UnityMatch3Cache';
+                this.storeName = 'files';
+                this.db = null;
+                this.cacheVersion = '1.0.2';
             }
             
-            // Настройки canvas для мобильных
-            const canvas = document.querySelector("#unity-canvas");
-            const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-            
-            if (isMobile) {
-                const meta = document.createElement('meta');
-                meta.name = 'viewport';
-                meta.content = 'width=device-width, height=device-height, initial-scale=1.0, user-scalable=no, maximum-scale=1.0, shrink-to-fit=no';
-                document.head.appendChild(meta);
-                
-                canvas.style.width = window.innerWidth + 'px';
-                canvas.style.height = window.innerHeight + 'px';
-                canvas.style.position = 'fixed';
-                canvas.style.left = '0';
-                canvas.style.top = '0';
-                
-                // Предотвращаем масштабирование
-                document.addEventListener('touchmove', function(e) {
-                    if (e.scale !== 1) {
-                        e.preventDefault();
-                    }
-                }, { passive: false });
-                
-                // Предотвращаем контекстное меню
-                document.addEventListener('contextmenu', function(e) {
-                    e.preventDefault();
+            async init() {
+                return new Promise((resolve, reject) => {
+                    const request = indexedDB.open(this.dbName, 1);
+                    
+                    request.onerror = () => reject(request.error);
+                    request.onsuccess = () => {
+                        this.db = request.result;
+                        resolve();
+                    };
+                    
+                    request.onupgradeneeded = (event) => {
+                        const db = event.target.result;
+                        if (!db.objectStoreNames.contains(this.storeName)) {
+                            db.createObjectStore(this.storeName);
+                        }
+                    };
                 });
             }
             
-            // Загружаем Unity
-            progressEl.style.width = '50%';
-            loadingEl.querySelector('#loading-text').textContent = 'Loading Unity...';
+            async getFile(url) {
+                return new Promise((resolve, reject) => {
+                    if (!this.db) {
+                        resolve(null);
+                        return;
+                    }
+                    
+                    const transaction = this.db.transaction([this.storeName], 'readonly');
+                    const store = transaction.objectStore(this.storeName);
+                    const request = store.get(url);
+                    
+                    request.onerror = () => reject(request.error);
+                    request.onsuccess = () => {
+                        resolve(request.result || null);
+                    };
+                });
+            }
             
-            // Динамически загружаем loader
-            const script = document.createElement('script');
-            script.src = 'Build/WebBuild.loader.js';
-            script.onload = function() {
-                progressEl.style.width = '70%';
-                loadingEl.querySelector('#loading-text').textContent = 'Initializing game...';
+            async saveFile(url, data) {
+                return new Promise((resolve, reject) => {
+                    if (!this.db) {
+                        resolve(false);
+                        return;
+                    }
+                    
+                    const transaction = this.db.transaction([this.storeName], 'readwrite');
+                    const store = transaction.objectStore(this.storeName);
+                    const request = store.put(data, url);
+                    
+                    request.onerror = () => reject(request.error);
+                    request.onsuccess = () => {
+                        resolve(true);
+                    };
+                });
+            }
+            
+            async clearCache() {
+                return new Promise((resolve, reject) => {
+                    if (!this.db) {
+                        resolve();
+                        return;
+                    }
+                    
+                    const transaction = this.db.transaction([this.storeName], 'readwrite');
+                    const store = transaction.objectStore(this.storeName);
+                    const request = store.clear();
+                    
+                    request.onerror = () => reject(request.error);
+                    request.onsuccess = () => resolve();
+                });
+            }
+        }
+        
+        // ==================== ОСНОВНАЯ ЛОГИКА ЗАГРУЗКИ ====================
+        
+        const UnityLoader = {
+            files: [
+                { url: 'Build/WebBuild.data.unityweb', type: 'binary', size: 0 },
+                { url: 'Build/WebBuild.framework.js.unityweb', type: 'text', size: 0 },
+                { url: 'Build/WebBuild.wasm.unityweb', type: 'binary', size: 0 }
+            ],
+            
+            cache: new UnityCache(),
+            totalSize: 0,
+            loadedSize: 0,
+            useCache: false,
+            
+            async init() {
+                try {
+                    await this.cache.init();
+                    this.useCache = true;
+                    document.getElementById('cache-indicator').style.display = 'block';
+                } catch (e) {
+                    console.warn('IndexedDB not available, cache disabled');
+                    this.useCache = false;
+                }
+                
+                // Проверяем версию кеша в localStorage
+                const cachedVersion = localStorage.getItem('unity_cache_version');
+                if (cachedVersion !== this.cache.cacheVersion) {
+                    // Новая версия - очищаем старый кеш
+                    await this.cache.clearCache();
+                    localStorage.setItem('unity_cache_version', this.cache.cacheVersion);
+                }
+            },
+            
+            async loadFile(fileInfo) {
+                const updateProgress = () => {
+                    this.loadedSize += fileInfo.size || 1024;
+                    const percent = (this.loadedSize / Math.max(this.totalSize, 1)) * 100;
+                    document.getElementById('progress-bar').style.width = `${Math.min(percent, 100)}%`;
+                };
+                
+                // Пробуем загрузить из кеша
+                if (this.useCache) {
+                    const cached = await this.cache.getFile(fileInfo.url);
+                    if (cached) {
+                        updateProgress();
+                        return cached;
+                    }
+                }
+                
+                // Загружаем с сервера
+                document.getElementById('loading-details').textContent = `Загрузка: ${fileInfo.url.split('/').pop()}`;
+                
+                const response = await fetch(fileInfo.url);
+                if (!response.ok) throw new Error(`Failed to load ${fileInfo.url}`);
+                
+                let data;
+                if (fileInfo.type === 'binary') {
+                    data = await response.arrayBuffer();
+                } else {
+                    data = await response.text();
+                }
+                
+                // Сохраняем в кеш
+                if (this.useCache && data) {
+                    await this.cache.saveFile(fileInfo.url, data);
+                }
+                
+                updateProgress();
+                return data;
+            },
+            
+            async loadAllFiles() {
+                // Сначала грузим loader.js напрямую
+                await this.loadScript('Build/WebBuild.loader.js');
+                
+                // Затем грузим остальные файлы
+                const promises = this.files.map(async (file) => {
+                    try {
+                        const data = await this.loadFile(file);
+                        return { url: file.url, data: data };
+                    } catch (e) {
+                        console.error(`Error loading ${file.url}:`, e);
+                        throw e;
+                    }
+                });
+                
+                return await Promise.all(promises);
+            },
+            
+            loadScript(url) {
+                return new Promise((resolve, reject) => {
+                    const script = document.createElement('script');
+                    script.src = url;
+                    script.onload = resolve;
+                    script.onerror = reject;
+                    document.head.appendChild(script);
+                });
+            }
+        };
+        
+        // ==================== ЗАПУСК ИГРЫ ====================
+        
+        async function initializeGame() {
+            const canvas = document.getElementById('unity-canvas');
+            const loadingText = document.getElementById('loading-text');
+            
+            try {
+                // Инициализация кеша
+                loadingText.textContent = 'Проверка кеша...';
+                await UnityLoader.init();
+                
+                // Определяем размер canvas
+                const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+                if (isMobile) {
+                    // Полноэкранный режим для мобильных
+                    canvas.width = window.innerWidth * window.devicePixelRatio;
+                    canvas.height = window.innerHeight * window.devicePixelRatio;
+                    
+                    canvas.style.width = '100%';
+                    canvas.style.height = '100%';
+                    canvas.style.position = 'fixed';
+                    canvas.style.left = '0';
+                    canvas.style.top = '0';
+                    
+                    // Блокируем масштабирование
+                    document.addEventListener('touchstart', (e) => {
+                        if (e.touches.length > 1) e.preventDefault();
+                    }, { passive: false });
+                    
+                    document.addEventListener('gesturestart', (e) => e.preventDefault());
+                    
+                    // Предотвращаем вызов контекстного меню
+                    document.addEventListener('contextmenu', (e) => e.preventDefault());
+                } else {
+                    canvas.width = 1920;
+                    canvas.height = 1080;
+                }
+                
+                // Загружаем файлы
+                loadingText.textContent = 'Загрузка игры...';
+                UnityLoader.totalSize = UnityLoader.files.length * 1024 * 1024; // Примерный размер
+                
+                const files = await UnityLoader.loadAllFiles();
+                
+                // Создаем Blob URLs для кешированных файлов
+                const fileMap = {};
+                files.forEach(file => {
+                    if (file.data instanceof ArrayBuffer) {
+                        fileMap[file.url] = URL.createObjectURL(new Blob([file.data]));
+                    } else {
+                        // Для текстовых файлов (если есть)
+                        fileMap[file.url] = file.data;
+                    }
+                });
+                
+                // Запускаем Unity
+                loadingText.textContent = 'Запуск...';
+                
+                // Ждем немного, чтобы убедиться что все загружено
+                await new Promise(resolve => setTimeout(resolve, 300));
+                
+                if (typeof createUnityInstance !== 'function') {
+                    throw new Error('Unity loader not loaded properly');
+                }
                 
                 createUnityInstance(canvas, {
                     arguments: [],
-                    dataUrl: "Build/WebBuild.data.unityweb",
-                    frameworkUrl: "Build/WebBuild.framework.js.unityweb",
-                    codeUrl: "Build/WebBuild.wasm.unityweb",
+                    dataUrl: fileMap['Build/WebBuild.data.unityweb'] || 'Build/WebBuild.data.unityweb',
+                    frameworkUrl: fileMap['Build/WebBuild.framework.js.unityweb'] || 'Build/WebBuild.framework.js.unityweb',
+                    codeUrl: fileMap['Build/WebBuild.wasm.unityweb'] || 'Build/WebBuild.wasm.unityweb',
                     streamingAssetsUrl: "StreamingAssets",
                     companyName: "MiKo",
                     productName: "Match3TelegrammApp",
                     productVersion: "1.0",
-                    showBanner: false // Скрываем баннер Unity
+                    // Оптимизации для мобильных
+                    devicePixelRatio: isMobile ? window.devicePixelRatio : 1,
+                    matchWebGLToCanvasSize: true,
+                    showBanner: false
                 }).then((unityInstance) => {
-                    progressEl.style.width = '100%';
+                    // Успешная загрузка
                     setTimeout(() => {
-                        loadingEl.style.opacity = '0';
+                        const loadingScreen = document.getElementById('loading-screen');
+                        loadingScreen.style.transition = 'opacity 0.5s';
+                        loadingScreen.style.opacity = '0';
+                        
                         setTimeout(() => {
-                            loadingEl.style.display = 'none';
-                        }, 300);
-                    }, 500);
+                            loadingScreen.style.display = 'none';
+                            
+                            // Уведомляем Telegram о готовности
+                            if (window.Telegram && Telegram.WebApp) {
+                                Telegram.WebApp.ready();
+                                Telegram.WebApp.expand();
+                                
+                                // Сохраняем инстанс для взаимодействия
+                                window.unityInstance = unityInstance;
+                                
+                                // Настраиваем обработку закрытия
+                                Telegram.WebApp.onEvent('viewportChanged', (e) => {
+                                    // Перерисовываем при изменении размера
+                                    canvas.width = window.innerWidth * window.devicePixelRatio;
+                                    canvas.height = window.innerHeight * window.devicePixelRatio;
+                                });
+                            }
+                        }, 500);
+                    }, 1000);
                     
-                    // Сохраняем инстанс для Telegram
-                    if (window.Telegram && Telegram.WebApp) {
-                        Telegram.WebApp.ready();
-                        window.unityInstance = unityInstance;
+                }).catch((error) => {
+                    console.error('Unity initialization failed:', error);
+                    loadingText.textContent = 'Ошибка загрузки игры';
+                    document.getElementById('loading-details').textContent = error.message;
+                    
+                    // Пробуем загрузить без кеша при ошибке
+                    if (UnityLoader.useCache) {
+                        setTimeout(() => {
+                            localStorage.removeItem('unity_cache_version');
+                            location.reload();
+                        }, 3000);
                     }
-                }).catch((message) => {
-                    loadingEl.querySelector('#loading-text').textContent = 'Error: ' + message;
-                    console.error(message);
                 });
-            };
-            
-            script.onerror = function() {
-                loadingEl.querySelector('#loading-text').textContent = 'Failed to load game files';
-            };
-            
-            document.head.appendChild(script);
+                
+            } catch (error) {
+                console.error('Initialization error:', error);
+                loadingText.textContent = 'Ошибка инициализации';
+                document.getElementById('loading-details').textContent = error.message;
+                
+                // Fallback: прямая загрузка без кеша
+                setTimeout(() => {
+                    const script = document.createElement('script');
+                    script.src = 'Build/WebBuild.loader.js';
+                    script.onload = () => {
+                        createUnityInstance(canvas, {
+                            arguments: [],
+                            dataUrl: "Build/WebBuild.data.unityweb",
+                            frameworkUrl: "Build/WebBuild.framework.js.unityweb",
+                            codeUrl: "Build/WebBuild.wasm.unityweb",
+                            streamingAssetsUrl: "StreamingAssets",
+                            companyName: "MiKo",
+                            productName: "Match3TelegrammApp",
+                            productVersion: "1.0"
+                        });
+                    };
+                    document.head.appendChild(script);
+                }, 2000);
+            }
         }
         
-        // Запускаем загрузку
-        window.addEventListener('DOMContentLoaded', loadUnityGame);
+        // ==================== ЗАПУСК ПРИ ЗАГРУЗКЕ СТРАНИЦЫ ====================
         
-        // Для Telegram WebApp
-        if (window.Telegram && Telegram.WebApp) {
-            Telegram.WebApp.expand(); // Разворачиваем на весь экран
+        document.addEventListener('DOMContentLoaded', () => {
+            // Настройки для Telegram WebApp
+            if (window.Telegram && Telegram.WebApp) {
+                Telegram.WebApp.setHeaderColor('#231F20');
+                Telegram.WebApp.setBackgroundColor('#231F20');
+                Telegram.WebApp.enableClosingConfirmation();
+            }
             
-            // Сохраняем прогресс при закрытии
-            window.addEventListener('beforeunload', function() {
-                if (window.unityInstance) {
-                    // Можно сохранить состояние игры через Telegram WebApp CloudStorage
-                    Telegram.WebApp.CloudStorage.setItem('last_session', Date.now().toString());
-                }
-            });
-        }
+            initializeGame();
+        });
+        
+        // Обработка ошибок сети
+        window.addEventListener('offline', () => {
+            const loadingText = document.getElementById('loading-text');
+            if (loadingText) {
+                loadingText.textContent = 'Нет соединения с интернетом';
+                document.getElementById('loading-details').textContent = 'Проверьте подключение';
+            }
+        });
+        
+        window.addEventListener('online', () => {
+            const loadingText = document.getElementById('loading-text');
+            if (loadingText && loadingText.textContent.includes('Нет соединения')) {
+                location.reload();
+            }
+        });
     </script>
 </body>
 </html>
